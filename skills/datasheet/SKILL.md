@@ -33,8 +33,8 @@ When this skill is called by another agent, workflow, or tool chain, use the fol
 
 | action | 必填参数 | 说明 |
 |--------|----------|------|
-| `query` | pdf, question | 针对具体问题从 PDF 中提取信息并回答 |
-| `summarize` | pdf | 总结文档或指定章节（question 可选，用于限定范围） |
+| `query` | pdf, question | 针对具体问题从 PDF 中提取信息并回答。**单 PDF + 针对性问题走快速路径**（跳过跨文档路由，直达 Step 1）；**无 PDF 或跨领域问题时触发完整 Step 0.5 跨文档分析** |
+| `summarize` | pdf | 总结文档或指定章节（question 可选，用于限定范围）。走快速路径，跳过跨文档路由 |
 | `init` | pdf | 为指定 PDF 生成/覆写 `_context.md` 缓存，并更新 `datasheet_index.md` 导航文件 |
 | `init_all` | — | 批量初始化工作目录下所有 PDF，并重写 `datasheet_index.md` 导航文件 |
 | `list` | — | 列出所有已初始化的文档及其主要内容摘要（读取 `datasheet_index.md`） |
@@ -108,7 +108,7 @@ STM32H750 的 VDD 范围为 1.62~3.6V
 
 Before first use, set up the Python environment by running:
 ```
-python skills/datasheet_reader/scripts/setup_env.py
+python skills/datasheet/scripts/setup_env.py
 ```
 This creates a `.venv/` with PyMuPDF installed. All subsequent script calls use this venv's Python.
 
@@ -126,8 +126,11 @@ Before any PDF processing, check if a cached context file exists:
 2. **If `_context.md` exists** → Read it with the Read tool. The file starts with the PDF name and "主要内容" summary, followed by the full TOC. Use this directly — skip PDF TOC parsing entirely.
 
 3. **If `_context.md` does NOT exist** → Generate it:
+
+   🔴 **CHECKPOINT** — 确认后将运行 `generate_context.py` 为新 PDF 创建缓存。确认 PDF 路径正确、文件未加密/未损坏。
+
    ```
-   .venv\Scripts\python.exe skills/datasheet_reader/scripts/generate_context.py "<pdf_path>" --force
+   .venv\Scripts\python.exe skills/datasheet/scripts/generate_context.py "<pdf_path>" --force
    ```
    This outputs JSON with the TOC structure and first 2-3 pages of text. Then:
    - Read the JSON output (TOC + first pages text)
@@ -171,6 +174,17 @@ Before any PDF processing, check if a cached context file exists:
 ### Step 0.5: Cross-Document Pre-Analysis（跨文档预分析）
 
 When the user asks about a specific IC or topic (whether or not a specific PDF is given):
+
+> **⚡ FAST-PATH EXEMPTION — 单文档直通**
+>
+> 同时满足以下条件时，**跳过 Step 0.5 全部 Phase**，直接进入 Step 1：
+> - 用户**明确指定了单个 PDF 文件路径**
+> - 问题的答案**仅依赖这一个 PDF**（例如 "这个芯片的 VDD 是多少"、"这个寄存器的地址是什么"）
+> - 问题**不涉及**跨文档交叉引用（如 "如何配置 DMA" 需要 Reference Manual + Driver Manual）
+>
+> 进入 Step 1 前仍需检查该 PDF 的 `_context.md` 是否存在（Step 0），存在则直接用缓存 TOC 定位；不存在则先生成。
+>
+> 不满足以上任一条件时，继续执行完整的跨文档预分析流程。
 
 > **MANDATORY RULE — Index-First Routing**
 >
@@ -224,6 +238,8 @@ Dimension decomposition:
 Conclusion: N documents required (list filenames)
 Exclusion rationale: <brief explanation for each PDF marked "Low" or "None">
 ```
+
+🛑 **STOP** — 向用户展示「文档路由计划」摘要（涉及哪些 PDF、各查什么内容、排除了哪些及其理由），确认后再继续。
 
 #### Phase D: Read Context Files and Locate Sections
 
@@ -305,7 +321,7 @@ When the user provides a PDF path or asks about a datasheet/schematic:
 1. If a `_context.md` cache exists (from Step 0), use its TOC and page count directly.
    Otherwise, run the TOC parser:
    ```
-   .venv\Scripts\python.exe skills/datasheet_reader/scripts/parse_toc.py "<pdf_path>" --fallback-scan
+   .venv\Scripts\python.exe skills/datasheet/scripts/parse_toc.py "<pdf_path>" --fallback-scan
    ```
 
 2. Based on `total_pages`, choose the processing path:
@@ -318,7 +334,7 @@ For short documents like circuit schematics, application notes, or brief datashe
 
 1. Export all pages as images:
    ```
-   .venv\Scripts\python.exe skills/datasheet_reader/scripts/export_page_images.py "<pdf_path>" "all" --output-dir "<temp_dir>" --dpi 200
+   .venv\Scripts\python.exe skills/datasheet/scripts/export_page_images.py "<pdf_path>" "all" --output-dir "<temp_dir>" --dpi 200
    ```
 
 2. Use the Read tool to view each exported PNG image. The model's vision capability will interpret:
@@ -357,11 +373,13 @@ Using the TOC from Step 1, determine which sections are relevant to the user's q
 
 If the question is ambiguous or broad, present the TOC to the user and ask which section(s) they want to explore.
 
+🔴 **CHECKPOINT** — 确认提取计划：所列页码范围是否覆盖用户问题、是否控制在 20 页以内（避免上下文溢出）。
+
 #### Phase 2: Extract Content
 
 Once target pages are identified, extract text:
 ```
-.venv\Scripts\python.exe skills/datasheet_reader/scripts/extract_pages.py "<pdf_path>" "<page_range>" --detect-images
+.venv\Scripts\python.exe skills/datasheet/scripts/extract_pages.py "<pdf_path>" "<page_range>" --detect-images
 ```
 
 This returns text content plus a list of pages that need multimodal analysis (pages with diagrams, timing charts, block diagrams, etc.).
@@ -370,14 +388,14 @@ This returns text content plus a list of pages that need multimodal analysis (pa
 
 If the question involves specifications, parameters, or register definitions:
 ```
-.venv\Scripts\python.exe skills/datasheet_reader/scripts/extract_tables.py "<pdf_path>" "<page_range>"
+.venv\Scripts\python.exe skills/datasheet/scripts/extract_tables.py "<pdf_path>" "<page_range>"
 ```
 
 #### Phase 4: Multimodal Analysis for Figures
 
 For pages flagged as `needs_multimodal` (timing diagrams, block diagrams, pin diagrams, etc.):
 ```
-.venv\Scripts\python.exe skills/datasheet_reader/scripts/export_page_images.py "<pdf_path>" "<page_list>" --output-dir "<temp_dir>"
+.venv\Scripts\python.exe skills/datasheet/scripts/export_page_images.py "<pdf_path>" "<page_list>" --output-dir "<temp_dir>"
 ```
 
 Then use the Read tool to view these images and extract information that text alone cannot convey.
@@ -411,7 +429,7 @@ Which section would you like me to focus on?
 
 ## Script Reference
 
-All scripts are in `skills/datasheet_reader/scripts/` and output JSON to stdout.
+All scripts are in `skills/datasheet/scripts/` and output JSON to stdout.
 
 | Script | Purpose | Key Args |
 |--------|---------|----------|
@@ -421,6 +439,61 @@ All scripts are in `skills/datasheet_reader/scripts/` and output JSON to stdout.
 | `extract_pages.py` | Get text from page range | `<pdf> <range> [--detect-images]` |
 | `export_page_images.py` | Render pages as PNG | `<pdf> <pages> [--output-dir] [--dpi]` |
 | `extract_tables.py` | Extract tables as markdown | `<pdf> <range>` |
+
+## 失败模式与异常处理
+
+每个脚本调用点必须编码显式 fallback 路径。遵循 **触发条件 → 一线修复 → 仍失败兜底** 三段式结构。
+
+### 环境与依赖
+
+| ID | 触发条件 | 一线修复 | 仍失败兜底 |
+|----|---------|---------|----------|
+| E1 | Python venv 不存在 (`--check-only` 返回非零) | 运行 `setup_env.py` 创建 venv 安装依赖 | 检查系统 Python 版本 ≥ 3.8，不满足则提示用户安装 |
+| E2 | `setup_env.py` 执行失败 (pip 安装超时/网络错误) | 重试一次，添加 `--timeout 120` | 提示用户手动执行 `pip install PyMuPDF` |
+| E3 | PDF 文件不存在或路径错误 | 检查文件扩展名是否为 `.pdf`，Glob 同目录下相似文件名 | 提示用户确认文件路径并重新提供 |
+| E4 | PDF 文件加密/受密码保护 | 尝试空密码打开 | 提示用户提供 PDF 密码 |
+
+### 上下文缓存 (Step 0)
+
+| ID | 触发条件 | 一线修复 | 仍失败兜底 |
+|----|---------|---------|----------|
+| C1 | `generate_context.py` 返回空 JSON 或异常退出 | 检查 PDF 是否扫描版（无文字层），改用 `--force --fallback-scan` 重试 | 标记该 PDF 为「需全图模式」，跳过 TOC 缓存，后续查询走短文档全图路径 |
+| C2 | `generate_context.py` 输出的 TOC 层级为 0（无书签 PDF） | 使用 `--fallback-scan` 从文本中自动探测章节标题 | 读取前 5 页文本，手动归纳内容摘要写入 `_context.md` |
+
+### TOC 解析 (Step 1)
+
+| ID | 触发条件 | 一线修复 | 仍失败兜底 |
+|----|---------|---------|----------|
+| T1 | `parse_toc.py` 返回空 TOC（无书签且文本探测失败） | 读取前 5 页文本，尝试从字体大小/加粗特征推断标题 | 向用户展示文档前几页的文本摘要，请用户指定要查询的页码范围 |
+| T2 | `parse_toc.py` 执行崩溃/超时 (大 PDF >2000 页) | 限制扫描范围为前 100 页 + 后 50 页（多数 datasheet 关键信息集中在前部） | 降级为纯文本扫描模式，不依赖 TOC 层级 |
+
+### 页面提取 (Step 2B Phase 2)
+
+| ID | 触发条件 | 一线修复 | 仍失败兜底 |
+|----|---------|---------|----------|
+| P1 | `extract_pages.py` 返回乱码/空文本（扫描版 PDF） | 将该页面标记为 `needs_multimodal`，走图像导出路径 | 如整个页码范围均乱码，全部切换为全图模式 |
+| P2 | `extract_pages.py` 执行超时/内存溢出 (页码范围过大) | 缩小范围到半（如 20 页 → 10 页）重试 | 逐页提取，每页单独调用 |
+
+### 表格提取 (Step 2B Phase 3)
+
+| ID | 触发条件 | 一线修复 | 仍失败兜底 |
+|----|---------|---------|----------|
+| B1 | `extract_tables.py` 返回空表格或无表格检测到 | 检查页面是否含 `--detect-images` 标记 — 可能表格以图片形式嵌入 | 导出该页面为图像，用多模态从图像中读取表格数据 |
+| B2 | `extract_tables.py` 表格解析错位/列合并错误 | 尝试 `extract_pages.py` 获取原始文本，从文本中手工解析行列结构 | 导出页面为图像，由模型从图像中直接读取 |
+
+### 图像导出 (Step 2A / Step 2B Phase 4)
+
+| ID | 触发条件 | 一线修复 | 仍失败兜底 |
+|----|---------|---------|----------|
+| I1 | `export_page_images.py` 导出空白图片 (无渲染引擎) | 降低 DPI 到 150 重试 | 回退到 `extract_pages.py` 文本提取，告知用户无法获取图表 |
+| I2 | `export_page_images.py` 执行超时/磁盘空间不足 | 减少同时导出的页数（如 10 页 → 3 页一批） | 仅导出最关键的 3 页图表，其余描述文本替代 |
+
+### 跨文档路由 (Step 0.5)
+
+| ID | 触发条件 | 一线修复 | 仍失败兜底 |
+|----|---------|---------|----------|
+| R1 | `datasheet_index.md` 不存在且无任何 `_context.md` 文件 | 推荐用户运行 `init_all` 或手动 `init` 指定 PDF | Glob 所有 `.pdf` 文件，列出清单请用户选择要初始化的文档 |
+| R2 | 路由计划中所有 PDF 标记为 "Low/None"（问题超出文档覆盖范围） | 扩展搜索：检查 PDF 文件名/标题是否包含用户问题的关键词 | 明确告知用户「当前文档库未覆盖此问题」，请用户补充相关 PDF |
 
 Page range format: `"5-10"`, `"1,3,5-7"`, or `"all"`
 
@@ -541,3 +614,34 @@ When synthesizing your answer, cross-reference each fact with the page it came f
 - For timing diagrams and waveforms, image mode is essential — text extraction cannot capture these.
 - Clean up temp_images directory after answering to avoid accumulating files.
 - If the venv doesn't exist yet, run setup_env.py first before any other script.
+
+## 🚫 反例与黑名单
+
+以下操作被严格禁止。违反这些规则可能导致数据手册解析失败、错误结论或资源浪费。
+
+### 流程安全
+
+| # | 🚫 禁止行为 | 原因 | ✅ 正确做法 |
+|---|-----------|------|-----------|
+| 1 | 跳过 `datasheet_index.md`，直接用 Glob 搜索 `_context.md` | 缺失文档级路由，可能遗漏相关 PDF | 必须先读 index，无 index 时才回退 Glob |
+| 2 | 单次提取超过 20 页文本 | 上下文溢出导致模型遗漏关键信息 | 分批提取，每批 10-20 页 |
+| 3 | 在没有确认 TOC 的情况下盲目搜索关键词 | TOC 层级结构提供章节归属，纯文本搜索容易断章取义 | 先查 TOC 定位章节 → 再提取该章节内容 |
+| 4 | 跳过跨文档路由分析，直接读单个 PDF | 硬件问题常涉及多份文档（Datasheet + Reference Manual + Schematic） | 必须走 Step 0.5 的 Phase A-D 全流程 |
+| 5 | 在没确认脚本输出格式的情况下直接调用 | `generate_context.py` 输出 JSON，需解析后再写 `_context.md` | 先读懂脚本输出格式，再按模板生成缓存文件 |
+
+### 输出质量
+
+| # | 🚫 禁止行为 | 原因 | ✅ 正确做法 |
+|---|-----------|------|-----------|
+| 6 | 给出技术参数时不附带 `[来源:]` 引用 | 硬件工程中错误参数可能损坏电路，必须可追溯 | 每个参数后附 `[来源: PDF名, 章节, p.XX, Table YY]` |
+| 7 | 对扫描版 PDF 强行文本提取后给出结论 | 扫描件文本提取乱码率高，容易制造虚假信息 | `--detect-images` 标记的页面必须走图像 + 多模态分析 |
+| 8 | 忽略 `needs_multimodal` 标记，跳过图像分析 | 时序图、框图、引脚图无法从文本中获取 | 必须对每个被标记页面执行 `export_page_images.py` |
+| 9 | 对 large_range(>50页) 直接提取全量文本 | 超出上下文窗口，且大部分内容与问题无关 | 先通过 TOC 精确定位 → 只用 `extract_pages.py` 提取目标页 |
+
+### 资源管理
+
+| # | 🚫 禁止行为 | 原因 | ✅ 正确做法 |
+|---|-----------|------|-----------|
+| 10 | 覆盖已有的 `_context.md` 而不通知用户 | 用户可能已手动编辑过缓存内容 | 覆盖前提示用户，或使用 `init` action 时明确告知 |
+| 11 | 忘清理 `temp_images/` 目录 | 图像文件积累占用磁盘空间 | 每次回答完毕后清理临时目录 |
+| 12 | Python venv 未验证就调用脚本 | 脚本依赖的 PyMuPDF 等包可能未安装 | 首次调用前运行 `setup_env.py`；调用时检查 venv 是否存在 |

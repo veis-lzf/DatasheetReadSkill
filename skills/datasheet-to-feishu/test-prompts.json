@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "prompt": "这是 RS1G125_(RevA.6).pdf 的路径 C:\Users\woan\Downloads\RS1G125_(RevA.6).pdf，帮我生成一份飞书云文档，详细分析这个芯片",
+    "expected": "执行 datasheet 分析 + 创建飞书文档，文档含9个章节、含 SVG/Mermaid 图表、参数表格、应用场景分析"
+  },
+  {
+    "id": 2,
+    "prompt": "把这个 STM32F103 datasheet 整理到飞书，要求有封装对比和竞品分析",
+    "expected": "识别到 depth=full + competitor 需求，正确执行两阶段流程，竞品章节有颜色标注对比"
+  },
+  {
+    "id": 3,
+    "prompt": "这个 PDF 只有 5 页的 app note，帮我写成飞书文档",
+    "expected": "识别短文档，用全页图片模式分析，生成简短但结构完整的飞书文档"
+  }
+]
